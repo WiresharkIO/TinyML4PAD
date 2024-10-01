@@ -1,5 +1,5 @@
 ---------------------
-__Tiny Machine Learning__
+__Tiny Machine Learning for Proximity Sensor Activity Detection__
 ---------------------
 
 > Design Cycle
