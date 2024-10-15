@@ -4,7 +4,7 @@ from sklearn.svm import LinearSVC
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.feature_selection import RFE
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, classification_report
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, roc_curve
 from datetime import datetime
 from definitions import ROOT_DIR
 from os import walk
@@ -54,15 +54,14 @@ def call_svm():
 
     X_train, X_test, y_train, y_test = train_test_split(featuresArray, labelArray, test_size=0.2,
                                                         random_state=42)
-
     scaler = StandardScaler()
     X_train_standardized = scaler.fit_transform(X_train)
     X_test_standardized = scaler.transform(X_test)
-	
+
     svc = LinearSVC(C=0.1, dual=False, loss='squared_hinge', penalty='l2', class_weight={0: 1, 1: 10}, max_iter=10000,
                     verbose=True)
 
-    rfe = RFE(estimator=svc, n_features_to_select=30, step=1)
+    rfe = RFE(estimator=svc, n_features_to_select=20, step=2)
     rfe.fit(X_train_standardized, y_train)
 
     X_train_rfe = rfe.transform(X_train_standardized)
@@ -71,6 +70,9 @@ def call_svm():
     svc.fit(X_train_rfe, y_train)
 
     try:
+
+        joblib.dump(svc, modelFolder + 'fea_sel_svcLinear.joblib')
+        print("model saved as 'fea_sel_svcLinear.joblib'")
 
         y_pred = svc.predict(X_test_rfe)
         accuracy_overall = accuracy_score(y_test, y_pred)
@@ -93,22 +95,23 @@ def call_svm():
         plt.show()
         plt.close()
 
-        print("Ended SVM Training at: " + str(datetime.now()))
-
-        selected_features = [features_list[i] for i in range(len(features_list)) if rfe.support_[i]]
+        # RFE - features
+        rfe_sel_fea = [features_list[i] for i in range(len(features_list)) if rfe.support_[i]]
         print("Selected features by RFE:")
-        print(selected_features)
+        print(rfe_sel_fea)
 
+        # svm weighting - features
         svm_fi = np.abs(svc.coef_).sum(axis=0)
         svm_fr = np.argsort(-svm_fi)
 
-        mrmr_features = mrmr_classif(X=featuresDataframe_MRMR, y=labelDataframe_MRMR, K=30)
+        # mRMR - features
+        mrmr_features = mrmr_classif(X=featuresDataframe_MRMR, y=labelDataframe_MRMR, K=20)
 
-        fea_weighting = [features_list[i] for i in svm_fr[:30]]
-        fea_mRMR = mrmr_features
+        svM_sel_fea = [features_list[i] for i in svm_fr[:20]]
+        mRMR_sel_fea = mrmr_features
 
-        intersection = set(fea_weighting) & set(fea_mRMR)
-        print(f"\nNumber of common features: {len(intersection)}")
+        intersection = set(svM_sel_fea) & set(mRMR_sel_fea) & set(rfe_sel_fea)
+        print(f"\nNumber of common features in rfe-svmW-mRMR: {len(intersection)}")
         print("Common features:")
         print(list(intersection))
 
@@ -117,7 +120,6 @@ def call_svm():
         print(traceback.format_exc())
         print("Ended SVM Training at: " + str(datetime.now()))
 
-    print('------------------Training-Ended----------------------')
 
 if __name__ == '__main__':
     print('------------------Training-Begins----------------------')
