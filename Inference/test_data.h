@@ -1,9 +1,7 @@
-#ifndef SAMPLED_DATA_H
-#define SAMPLED_DATA_H
+#ifndef TEST_DATA_H
+#define TEST_DATA_H
 
-#define NUM_SAMPLES 1762
-#define NUM_FEATURES 40
+extern const float raw_input_data[1500];
+extern const int activity_class[1500];
 
-extern const float sampled_data[NUM_SAMPLES][NUM_FEATURES + 1];
-
-#endif
+#endif // TEST_DATA_H

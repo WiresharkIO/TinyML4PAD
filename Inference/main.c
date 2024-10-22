@@ -25,26 +25,54 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+#include "test_data.h"
+/* math operation includes */
+#include <math.h>
+#include "arm_math.h"
+//#include "arm_const_structs.h"
+//#include "fatfs.h"
 
-#include "svm_linear_lopo1.h"
-#include "svm_linear_lopo1_data.h"
-#include "svm_linear_lopo1_data_params.h"
+/* model file includes */
+#include "svclinear.h"
+#include "svclinear_data.h"
+#include "svclinear_data_params.h"
 
 #include "ai_datatypes_defines.h"
 #include "ai_platform.h"
-#define TOTAL_SAMPLES_PER_SEGMENT 40
-#define NUM_SEGMENTS 2
 
-#include "test_data_LOPO_01.h"
+
+/* signal processing parameters for feature extraction in raw data(signal) */
+#define FS 50 /* sampling frequency i.e the number of samples per second */
+#define SEGMENT_LENGTH 3 /* in seconds */
+#define FRAME_LENGTH (FS * SEGMENT_LENGTH) /* total number of samples per segment */
+//#define FRAME_LENGTH 128
+#define OVERLAP 0.5f /* the amount of samples overlapping with the next segment, example
+0-->150(segment-1), 75-->225(segment-2), ..so on */
+#define ITER_LENGTH (FRAME_LENGTH * (1.0f - OVERLAP)) /* 150-samples*(1-0.5)=75-samples  */
+#define FFT_SIZE 256  // Next power of 2 after 150
+/* Butterworth-BPF */
+#define BLOCK_SIZE 256
+#define NUM_TAPS 11 // 5th order filter = 5 * 2 + 1 taps
+#define NUM_STAGES 3 // 5th order filter = 3 biquad stages
+
+#define FEATURE_COUNT 7 // Number of features we're extracting
+
+/* validation parameters */
+#define TEST_DATA_SIZE 1500
+
+
+/* data-gathering and storing in circular buffer to extract features for inference */
+typedef struct {
+    float data[FRAME_LENGTH];
+    int head;
+    int tail;
+    int count;
+} CircularBuffer;
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-/* for inference performance */
-typedef struct {
-	ai_float features[NUM_FEATURES];
-    uint8_t true_label;
-} TestSegment;
+
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -58,77 +86,103 @@ typedef struct {
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 
-// FOR DATA TRANSMISSON TO SERIAL TERMINAL
-int8_t strTemp[100];
-char strPrediction[100];
+/* signal processing parameters for feature extraction in raw data(signal) */
+//float filtered_data[DATA_POINTS];
+//float extracted_features[7];
 
-// AI-MODEL required buffers/variables
+/* hanning-window */
+float hann_window[FRAME_LENGTH];
+
+/* Butterworth-BPF filter coefficients */
+//float32_t b[] = {
+//    0.00081629, 0.0, -0.00408144, 0.0, 0.00816288, 0.0,
+//    -0.00816288, 0.0, 0.00408144, 0.0, -0.00081629
+//};
+//float32_t a[] = {
+//    1.0, -8.01123129, 29.06510762, -62.94704732, 90.18674136,
+//    -89.36422836, 62.03718586, -29.79614922, 9.47586324, -1.80177451,
+//    0.15553267
+//};
+arm_biquad_casd_df1_inst_f32 S;
+/* state buffer to store states of BPF */
+static float32_t state[4 * NUM_STAGES];
+/* coeff. buffer to store coeffs. of BPF */
+static float32_t coeff[5 * NUM_STAGES];
+
+/* data-gathering and storing in circular buffer to extract features for inference */
+CircularBuffer input_buffer;
+
+/* Training data standardization values for feature */
+const float feature_means[FEATURE_COUNT] = {0.40782377f, 0.00054899f, 0.59396853f, 0.09704273f, 2.10049263f, 19.23477190f, 17.29472961f};
+const float feature_stds[FEATURE_COUNT] = {1.20171863f, 0.00034129f, 0.40976195f, 0.05771965f, 0.65923357f, 11.58719020f, 11.47957269f};
+int flag=888;
+/* model IO variables and buffers */
+//float sensor_data_buffer[DATA_POINTS];
 ai_handle proximity_data;
-AI_ALIGNED(4) ai_float aiInData[AI_SVM_LINEAR_LOPO1_IN_1_SIZE];
-static AI_ALIGNED(4) ai_float aiOutData[AI_SVM_LINEAR_LOPO1_OUT_1_SIZE];
-ai_u8 activations[AI_SVM_LINEAR_LOPO1_DATA_ACTIVATIONS_SIZE];
+AI_ALIGNED(4) ai_float aiInData[AI_SVCLINEAR_IN_1_SIZE];
+static AI_ALIGNED(4) ai_float aiOutData[AI_SVCLINEAR_OUT_1_SIZE];
+ai_u8 activations[AI_SVCLINEAR_DATA_ACTIVATIONS_SIZE];
 ai_buffer *ai_input;
 ai_buffer *ai_output;
 
-// FOR INFERENCE PREDICTION
+/* FOR INFERENCE PREDICTION */
 const char *activities[2] = { "NotEating", "Eating" };
 AI_ALIGNED(4) ai_float model_output;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
-void PeriphCommonClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
+
+/* data-gathering and storing in circular buffer to extract features for inference */
+void circular_buffer_init(CircularBuffer* cb);
+void circular_buffer_push(CircularBuffer* cb, float item);
+void circular_buffer_pop(CircularBuffer* cb, float* item);
+
+/* Butterworth-BPF */
+void bandpass_filter_init(float f_low, float f_high, float fs);
+void apply_bandpass_filter(float* input, float* output, int length);
+
+/* hanning-window */
+void arm_hanning_f32_init(float* frame, int length);
+
+/* feature extraction function prototypes */
+int compare_floats(const void* a, const void* b);
+void calculate_median(float* data, int length, float* median);
+float calculate_kurtosis(float* data, int length);
+float calculate_entropy(float* data, int length);
+void extract_features(float* frame, float* window_frame, float* features);
+
+/* model related function prototypes */
+//void receive_sensor_data(float new_data_point);
 static void AI_Init(void);
 static void AI_Run(float *pIn, float *pOut);
+void DWT_Init(void);
+uint32_t DWT_GetCycle(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
-// TEST-INPUT
-TestSegment test_segments[] = {
-    {{0.096506460000000, -0.164920820000000, 0.135400350000000, 0.184841160000000,
-    -0.070261580000000, -0.030177400000000, 0.187843610000000, -0.093096590000000,
-	-1.263773850000000, 0.359632190000000, -0.720365040000000, 0.225761960000000,
-	-0.739728250000000, -0.461497390000000, 1.250458810000000, 0.015801680000000,
-	0.836598060000000, -1.227048390000000, 1.819182770000000, 1.814093060000000,
-	1.403826530000000, -0.828473260000000, 2.549969770000000, 1.972066940000000,
-	0.577904340000000, -0.449631810000000, 1.089196650000000, 0.577904340000000,
-	1.104573730000000, 1.422227970000000, 0.999091130000000, 1.360588130000000,
-	1.810035400000000, 0.653906910000000, 0.653906910000000, -0.309108940000000,
-	-0.309108940000000, -0.313859680000000, -0.336692320000000, 2.568411550000000}, 1},
-
-	{{-0.066060780000000, 0.034536410000000, -0.052621520000000, -0.058222210000000,
-	0.011438600000000, -0.032548970000000, -0.057762590000000, -3.910138820000000,
-	5.843828230000000, -0.076920650000000, -0.955262630000000, -1.080793430000000,
-	-1.303231160000000, -0.783729820000000, -0.910725590000000, -1.132649230000000,
-	-0.962573720000000, 0.030126640000000, -0.160119340000000, -0.212351720000000,
-	0.031741030000000, -1.050244510000000, 0.046151890000000, 0.282148890000000,
-	-0.847784760000000, -0.449631810000000, -0.740239320000000, -0.847784760000000,
-	-0.465029830000000, -0.368028120000000, -0.509093100000000, -0.363048430000000,
-	-0.250355450000000, -0.298545390000000, -0.298545390000000, -0.311823820000000,
-	-0.311823820000000, -0.009272620000000, -0.308397660000000, 0.369353730000000}, 0}
-};
-
 static void AI_Init(void) {
 	ai_error err;
 
 	const ai_handle act_addr[] = { activations };
 
-	err = ai_svm_linear_lopo1_create_and_init(&proximity_data, act_addr,
+	err = ai_svclinear_create_and_init(&proximity_data, act_addr,
 			NULL);
 	if (err.type != AI_ERROR_NONE) {
 		printf("ai_network_create error - type=%d code=%d\r\n", err.type,
 				err.code);
 		Error_Handler();
 	}
-	ai_input = ai_svm_linear_lopo1_inputs_get(proximity_data, NULL);
-	ai_output = ai_svm_linear_lopo1_outputs_get(proximity_data, NULL);
+	ai_input = ai_svclinear_inputs_get(proximity_data, NULL);
+	ai_output = ai_svclinear_outputs_get(proximity_data, NULL);
 }
 
 static void AI_Run(float *pIn, float *pOut) {
@@ -138,17 +192,216 @@ static void AI_Run(float *pIn, float *pOut) {
 	ai_input[0].data = AI_HANDLE_PTR(pIn);
 	ai_output[0].data = AI_HANDLE_PTR(pOut);
 
-	batch = ai_svm_linear_lopo1_run(proximity_data, ai_input, ai_output);
+	batch = ai_svclinear_run(proximity_data, ai_input, ai_output);
 	if (batch != 1) {
-		err = ai_svm_linear_lopo1_get_error(proximity_data);
+		err = ai_svclinear_get_error(proximity_data);
 		printf("AI ai_network_run error - type=%d code=%d\r\n", err.type,
 				err.code);
 		Error_Handler();
 	}
 }
 
-uint8_t make_prediction(ai_float model_output) {
-	return (model_output > 0) ? 1 : 0;
+
+/* storing and restoring data in a circular buffer */
+void circular_buffer_init(CircularBuffer* cb) {
+    cb->head = 0;
+    cb->tail = 0;
+    cb->count = 0;
+}
+
+void circular_buffer_push(CircularBuffer* cb, float item) {
+    cb->data[cb->head] = item;
+    cb->head = (cb->head + 1) % FRAME_LENGTH;
+    if (cb->count < FRAME_LENGTH) {
+        cb->count++;
+    } else {
+        cb->tail = (cb->tail + 1) % FRAME_LENGTH;
+    }
+}
+
+void circular_buffer_pop(CircularBuffer* cb, float* item) {
+    *item = cb->data[cb->tail];
+    cb->tail = (cb->tail + 1) % FRAME_LENGTH;
+    cb->count--;
+}
+
+/* Butterworth-BPF */
+void bandpass_filter_init(float f_low, float f_high, float fs) {
+    float w_low = 2.0f * tanf(M_PI * f_low / fs);
+    float w_high = 2.0f * tanf(M_PI * f_high / fs);
+    float w0 = sqrtf(w_low * w_high);
+    float bw = w_high - w_low;
+    float Q = w0 / bw;
+    float alpha = sinf(w0) / (2.0f * Q);
+
+    float b0 = alpha;
+    float b1 = 0.0f;
+    float b2 = -alpha;
+    float a0 = 1.0f + alpha;
+    float a1 = -2.0f * cosf(w0);
+    float a2 = 1.0f - alpha;
+
+    // Normalize coefficients
+    b0 /= a0;
+    b1 /= a0;
+    b2 /= a0;
+    a1 /= a0;
+    a2 /= a0;
+
+    // Set up coefficient array for biquad filter
+    for (int i = 0; i < NUM_STAGES; i++) {
+        coeff[5*i] = b0;
+        coeff[5*i + 1] = b1;
+        coeff[5*i + 2] = b2;
+        coeff[5*i + 3] = -a1;
+        coeff[5*i + 4] = -a2;
+    }
+
+    // Initialize the filter
+    arm_biquad_cascade_df1_init_f32(&S, NUM_STAGES, coeff, state);
+}
+
+void apply_bandpass_filter(float* input, float* output, int length) {
+    arm_biquad_cascade_df1_f32(&S, input, output, length);
+}
+
+/* hanning-window implementation */
+void arm_hanning_f32_init(float *hann_window, int frame_length) {
+    for (uint32_t i = 0; i < frame_length; i++) {
+    	hann_window[i] = 0.5 * (1.0 - cos(2.0 * M_PI * i / (frame_length - 1)));
+    }
+}
+
+float calculate_kurtosis(float* data, int length) {
+    float mean, var, kurt;
+    arm_mean_f32(data, length, &mean);
+    arm_var_f32(data, length, &var);
+
+    float sum = 0;
+    for (int i = 0; i < length; i++) {
+        float diff = data[i] - mean;
+        sum += diff * diff * diff * diff;
+    }
+
+    kurt = (sum / length) / (var * var) - 3;
+    return kurt;
+}
+
+int compare_floats(const void* a, const void* b) {
+    float fa = *(const float*)a;
+    float fb = *(const float*)b;
+    return (fa > fb) - (fa < fb);  // Returns 1 if fa > fb, -1 if fa < fb, 0 otherwise
+}
+
+void calculate_median(float* data, int length, float* median) {
+    // Create a copy of the data so the original array is not modified
+    float sorted_data[length];
+    for (int i = 0; i < length; i++) {
+        sorted_data[i] = data[i];
+    }
+
+    // Step 1: Sort the copy of the array
+    qsort(sorted_data, length, sizeof(float), compare_floats);
+
+    // Step 2: Calculate the median
+    if (length % 2 == 0) {
+        // Even number of elements: median is the average of the two middle elements
+        *median = (sorted_data[length/2 - 1] + sorted_data[length/2]) / 2.0f;
+    } else {
+        // Odd number of elements: median is the middle element
+        *median = sorted_data[length/2];
+    }
+}
+
+float calculate_entropy(float* data, int length) {
+    float sum = 0;
+    for (int i = 0; i < length; i++) {
+        if (data[i] > 0) {
+            sum += data[i] * log2f(data[i]);
+        }
+    }
+    return -sum;
+}
+
+void extract_features(float* frame, float* window_frame, float* features) {
+//	const int FFT_SIZE = 256;  // Next power of 2 after 150
+	// Create temporary buffers for FFT computation
+	static float fft_buffer[2 * FFT_SIZE]; // Complex input buffer (twice the size for real/imaginary pairs)
+	static float fourier_frame[FFT_SIZE];
+	static float psd_frame[FFT_SIZE/2];
+//    float fourier_frame[FRAME_LENGTH];
+//    float psd_frame[FRAME_LENGTH/2];
+//    int fft_length=FRAME_LENGTH / 2;
+	// Clear the buffers
+	memset(fft_buffer, 0, sizeof(fft_buffer));
+	memset(fourier_frame, 0, sizeof(fourier_frame));
+	memset(psd_frame, 0, sizeof(psd_frame));
+
+
+	for (int i = 0; i < FRAME_LENGTH; i++) {
+		fft_buffer[2*i] = window_frame[i];    // Real part
+		fft_buffer[2*i + 1] = 0.0f;           // Imaginary part
+	}
+
+    // Compute FFT
+//    arm_cfft_radix4_instance_f32 S;
+//    arm_cfft_radix4_init_f32(&S, fft_length, 0, 1);
+//    arm_cfft_radix4_f32(&S, window_frame);
+//    arm_cmplx_mag_f32(window_frame, fourier_frame, fft_length);
+
+	arm_cfft_instance_f32 S;
+	arm_status status = arm_cfft_init_f32(&S, FFT_SIZE);
+	if (status != ARM_MATH_SUCCESS) {
+		// Handle initialization error
+		flag=999;
+		return;
+	}
+
+	arm_cfft_f32(&S, fft_buffer, 0, 1);
+	// Calculate magnitude
+	for (int i = 0; i < FFT_SIZE/2; i++) {
+		float real = fft_buffer[2*i];
+		float imag = fft_buffer[2*i + 1];
+		fourier_frame[i] = sqrtf(real * real + imag * imag);
+	}
+
+    // Compute PSD
+    float winq = 0;
+    arm_power_f32(hann_window, FRAME_LENGTH, &winq);
+//    winq *= 25;
+    winq *= FS;
+//    arm_mult_f32(fourier_frame, fourier_frame, psd_frame, fft_length);
+//    arm_scale_f32(psd_frame, 1/winq, psd_frame, fft_length);
+    for (int i = 0; i < FFT_SIZE/2; i++) {
+		psd_frame[i] = (fourier_frame[i] * fourier_frame[i]) / winq;
+	}
+    // Compute features
+    features[0] = calculate_kurtosis(frame, FRAME_LENGTH);  // TD_KURT
+//    arm_median_f32(fourier_frame, FRAME_LENGTH/2, &features[1]);
+//    calculate_median(fourier_frame, fft_length, &features[1]); // FD_MEDIAN
+//    arm_max_f32(psd_frame, fft_length, &features[2], NULL);  // TFD_MAX
+//    arm_std_f32(psd_frame, fft_length, &features[3]);  // TFD_STD
+//    features[4] = calculate_entropy(psd_frame, fft_length);  // TFD_S_ENT
+//    features[5] = calculate_kurtosis(psd_frame, fft_length);  // TFD_S_KURT
+//    features[6] = calculate_kurtosis(psd_frame, fft_length);  // TFD_KURT
+//    features[1]=2.0f;
+//    features[2]=2.0f;
+//    features[3]=2.0f;
+//    features[4]=2.0f;
+//    features[5]=2.0f;
+//    features[6]=2.0f;
+    calculate_median(fourier_frame, FFT_SIZE/2, &features[1]); // FD_MEDIAN
+	arm_max_f32(psd_frame, FFT_SIZE/2, &features[2], NULL);  // TFD_MAX
+	arm_std_f32(psd_frame, FFT_SIZE/2, &features[3]);  // TFD_STD
+	features[4] = calculate_entropy(psd_frame, FFT_SIZE/2);  // TFD_S_ENT
+	features[5] = calculate_kurtosis(psd_frame, FFT_SIZE/2);  // TFD_S_KURT
+	features[6] = calculate_kurtosis(psd_frame, FFT_SIZE/2);  // TFD_KURT
+}
+
+void standardize_features(float* features, float* standardized_features) {
+    for (int i = 0; i < FEATURE_COUNT; i++) {
+        standardized_features[i] = (features[i] - feature_means[i]) / feature_stds[i];
+    }
 }
 
 void DWT_Init(void) {
@@ -160,6 +413,7 @@ void DWT_Init(void) {
 uint32_t DWT_GetCycle(void) {
     return DWT->CYCCNT;
 }
+
 /* USER CODE END 0 */
 
 /**
@@ -185,95 +439,101 @@ int main(void)
   /* Configure the system clock */
   SystemClock_Config();
 
-  /* Configure the peripherals common clocks */
-  PeriphCommonClock_Config();
-
   /* USER CODE BEGIN SysInit */
 
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_USB_Device_Init();
+  MX_USART2_UART_Init();
+  MX_USB_DEVICE_Init();
   /* USER CODE BEGIN 2 */
-	DWT_Init();
-	AI_Init();
+  float f_low = 0.5f;
+  float f_high = 5.0f;
 
-	uint32_t correct_predictions = 0;
-	uint32_t total_predictions = 0;
+  bandpass_filter_init(f_low, f_high, FS);
+  arm_hanning_f32_init(&hann_window, FRAME_LENGTH);
 
-	uint32_t start_cycle, end_cycle;
-	ai_float cpu_mhz = SystemCoreClock / 1000000.0f;
+  circular_buffer_init(&input_buffer);
+
+  float frame[FRAME_LENGTH];
+  float window_frame[FRAME_LENGTH];
+  float normalized_frame[FRAME_LENGTH];
+  float extracted_features[FEATURE_COUNT];
+  float mean_value, std_value;
+  int sample_count = 0;
+
+  float standardized_features[FEATURE_COUNT];
+
+  AI_Init();
+  DWT_Init();
+  uint32_t start_cycle, end_cycle;
+  int correct_predictions = 0;
+  int total_predictions = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  for (int i = 0; i < TEST_DATA_SIZE; i++){
+		  float new_sample=raw_input_data[i];
 
-	  /* ADDED TO INFER 2-INPUT SEGEMENTS HARD-CODED IN THIS FILE */
-	  /*
-	  for (uint32_t seg = 0; seg < NUM_SEGMENTS; seg++) {
-			memcpy(aiInData, test_segments[seg].features, sizeof(ai_float) * TOTAL_SAMPLES_PER_SEGMENT);
-			start_cycle = DWT_GetCycle();
-			AI_Run(aiInData, aiOutData);
-			end_cycle = DWT_GetCycle();
-			ai_float inference_time = (end_cycle - start_cycle) / (cpu_mhz * 1000.0f);
+		  circular_buffer_push(&input_buffer, new_sample);
+		  sample_count++;
 
-			sprintf(strTemp, "Inference time: %0.3f msec\r\n", inference_time);
-			CDC_Transmit_FS((uint8_t*) strTemp, strlen(strTemp));
-			HAL_Delay(10);
+		  if (sample_count % (int)ITER_LENGTH == 0) {
+			  for (int i = 0; i < FRAME_LENGTH; i++) {
+				  circular_buffer_pop(&input_buffer, &frame[i]);
+			  }
+			  for (int i = FRAME_LENGTH / 2; i < FRAME_LENGTH; i++) {
+				  circular_buffer_push(&input_buffer, frame[i]);
+			  }
 
-			uint8_t predicted_class = make_prediction(aiOutData[0]);
+			  apply_bandpass_filter(frame, frame, FRAME_LENGTH);
 
-			if (predicted_class == test_segments[seg].true_label) {
-				correct_predictions++;
-			}
-			total_predictions+=1;
+	//		  arm_mult_f32(frame, hann_window, frame, FRAME_LENGTH);
 
-			sprintf(strPrediction, "Segment-%lu, Predicted_class-%d, True_class-%d\r\n",
-								seg, predicted_class, test_segments[seg].true_label);
-			CDC_Transmit_FS((uint8_t*) strPrediction, strlen(strPrediction));
-			HAL_Delay(10);
-	  	  }
-	  float accuracy = (float)correct_predictions / total_predictions * 100.0f;
-	  sprintf(strTemp, "Accuracy: %.2f%% \r\n", accuracy);
-	  CDC_Transmit_FS((uint8_t*) strTemp, strlen(strTemp));
-	  HAL_Delay(10);
-	  */
+			  arm_mean_f32(frame, FRAME_LENGTH, &mean_value);
 
-	  /* ADDED TO INFER BLOCK OF INPUT */
+			  arm_std_f32(frame, FRAME_LENGTH, &std_value);
 
-	  for (uint32_t segment = 0; segment < NUM_SAMPLES; segment++) {
-	      memcpy(aiInData, sampled_data[segment], sizeof(ai_float) * NUM_FEATURES);
+			  if (std_value != 0) {
+				  for (int i = 0; i < FRAME_LENGTH; i++) {
+					  normalized_frame[i] = (frame[i] - mean_value) / std_value;
+				  }
+			  }
 
-	      start_cycle = DWT_GetCycle();
-	      AI_Run(aiInData, aiOutData);
-	      end_cycle = DWT_GetCycle();
+			  arm_mult_f32(normalized_frame, hann_window, window_frame, FRAME_LENGTH);
 
-	      ai_float inference_time = (end_cycle - start_cycle) / (cpu_mhz * 1000.0f);
+			  extract_features(frame, window_frame, extracted_features);
 
-	      uint8_t predicted_class = make_prediction(aiOutData[0]);
-	      uint8_t true_label = (int)sampled_data[segment][NUM_FEATURES];
-	      if (predicted_class == true_label) {
-	    	  correct_predictions++;
-	      }
-	      total_predictions+=1;
+			  standardize_features(extracted_features, standardized_features);
 
-	      sprintf(strTemp, "Segment %lu, Inference time: %.3f msec\r\n", segment, inference_time);
-	      CDC_Transmit_FS((uint8_t*) strTemp, strlen(strTemp));
-	      HAL_Delay(10);
+			  // Perform inference
+			  start_cycle = DWT_GetCycle();
+			  AI_Run(standardized_features, aiOutData);
+			  end_cycle = DWT_GetCycle();
+
+			  // Get the model's prediction
+			  float prediction = aiOutData[0];
+			  int predicted_class = prediction > 0.5 ? 1 : 0;  // Assuming binary classification
+	//		  infer_model(features);
+			  if (predicted_class == activity_class[i]) {
+				  correct_predictions++;
+			  }
+			  total_predictions++;
+		  }
 
 	  }
-
-	  float accuracy = (float)correct_predictions / total_predictions * 100.0f;
-	  sprintf(strTemp, "Accuracy: %.2f%% \r\n", accuracy);
-	  CDC_Transmit_FS((uint8_t*) strTemp, strlen(strTemp));
-	  HAL_Delay(10);
+	  float accuracy = (float)correct_predictions / total_predictions;
+	  printf("Accuracy: %.2f%%\n", accuracy * 100);
+	  HAL_Delay(20);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
   }
+  return 0;
   /* USER CODE END 3 */
 }
 
@@ -288,74 +548,72 @@ void SystemClock_Config(void)
 
   /** Configure the main internal regulator output voltage
   */
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSE
-                              |RCC_OSCILLATORTYPE_MSI;
-  RCC_OscInitStruct.LSEState = RCC_LSE_OFF;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.MSIState = RCC_MSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.MSICalibrationValue = RCC_MSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_6;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_MSI;
-  RCC_OscInitStruct.PLL.PLLM = RCC_PLLM_DIV1;
-  RCC_OscInitStruct.PLL.PLLN = 32;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM = 4;
+  RCC_OscInitStruct.PLL.PLLN = 72;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
-  RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2;
-  RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = 3;
+  RCC_OscInitStruct.PLL.PLLR = 2;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
   }
 
-  /** Configure the SYSCLKSource, HCLK, PCLK1 and PCLK2 clocks dividers
+  /** Initializes the CPU, AHB and APB buses clocks
   */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK4|RCC_CLOCKTYPE_HCLK2
-                              |RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
-  RCC_ClkInitStruct.AHBCLK2Divider = RCC_SYSCLK_DIV2;
-  RCC_ClkInitStruct.AHBCLK4Divider = RCC_SYSCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_3) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
   {
     Error_Handler();
   }
-
-  /** Enable MSI Auto calibration
-  */
-  HAL_RCCEx_EnableMSIPLLMode();
 }
 
 /**
-  * @brief Peripherals Common Clock Configuration
+  * @brief USART2 Initialization Function
+  * @param None
   * @retval None
   */
-void PeriphCommonClock_Config(void)
+static void MX_USART2_UART_Init(void)
 {
-  RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
 
-  /** Initializes the peripherals clock
-  */
-  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_SMPS;
-  PeriphClkInitStruct.SmpsClockSelection = RCC_SMPSCLKSOURCE_HSI;
-  PeriphClkInitStruct.SmpsDivSelection = RCC_SMPSCLKDIV_RANGE0;
+  /* USER CODE BEGIN USART2_Init 0 */
 
-  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN Smps */
+  /* USER CODE BEGIN USART2_Init 2 */
 
-  /* USER CODE END Smps */
+  /* USER CODE END USART2_Init 2 */
+
 }
 
 /**
@@ -371,39 +629,25 @@ static void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOC_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOD_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_5, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : PC4 */
-  GPIO_InitStruct.Pin = GPIO_PIN_4;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  /*Configure GPIO pin : B1_Pin */
+  GPIO_InitStruct.Pin = B1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PB0 PB1 PB5 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_5;
+  /*Configure GPIO pin : LD2_Pin */
+  GPIO_InitStruct.Pin = LD2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PD0 PD1 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PB6 PB7 */
-  GPIO_InitStruct.Pin = GPIO_PIN_6|GPIO_PIN_7;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF7_USART1;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
 
 /* USER CODE BEGIN MX_GPIO_Init_2 */
 /* USER CODE END MX_GPIO_Init_2 */
