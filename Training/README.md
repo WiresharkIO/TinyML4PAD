@@ -1,3 +1,5 @@
+To learn and know more about this Tiny-ML project and its general workflow, refer to this documentation: https://wiresharkio.github.io/TinyML4PAD_documentation/
+
 ----------------------------
 What is this section about ?
 ---------------------------
