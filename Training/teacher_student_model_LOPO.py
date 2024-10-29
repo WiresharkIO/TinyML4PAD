@@ -29,8 +29,9 @@ def create_lopo_dataset(participant_id, inlab_files, freeliving_files, inlab_fol
     train_df = pd.DataFrame()
 
     for inlab_file in inlab_files:
-        df = pd.read_csv(os.path.join(inlab_folder, inlab_file))
-        train_df = pd.concat([train_df, df], ignore_index=True)
+        if inlab_file[35:37] != participant_id[35:37]:
+            df = pd.read_csv(os.path.join(inlab_folder, inlab_file))
+            train_df = pd.concat([train_df, df], ignore_index=True)
 
     for freeliving_file in freeliving_files:
         if freeliving_file != participant_id:
@@ -56,8 +57,8 @@ def prepare_features_and_labels(df, features_list, label_column='SEQUENCE_TRUTH_
 
 def call_teacher_training(models_folder):
 
-    inlab_folder = sourceFolder + '\\features\\sequence\\inlab\\inlab_3s\\'
-    freeliving_folder = sourceFolder + '\\features\\sequence\\freeliving\\freeliving_3s\\'
+    inlab_folder = sourceFolder + '\\features\\sequence\\inlab\\inlab_2.56s\\'
+    freeliving_folder = sourceFolder + '\\features\\sequence\\freeliving\\freeliving_2.56s\\'
 
     os.makedirs(models_folder, exist_ok=True)
 
@@ -72,14 +73,14 @@ def call_teacher_training(models_folder):
 
     features_list = ['TD_KURT', 'FD_MEDIAN', 'TFD_MAX', 'TFD_STD', 'TFD_S_ENT', 'TFD_S_KURT', 'TFD_KURT']
 
-    model_files = [f for f in os.listdir(models_folder) if f.startswith('LOPO_model_3s_')]
+    model_files = [f for f in os.listdir(models_folder) if f.startswith('LOPO_model_2.56s_')]
     # print(model_files)
     models = [joblib.load(os.path.join(models_folder, model_file)) for model_file in sorted(model_files)]
     # print(model)
-    scaler_files = [f for f in os.listdir(models_folder) if f.startswith('LOPO_scaler_3s_')]
-    # print(scaler_files)
+    scaler_files = [f for f in os.listdir(models_folder) if f.startswith('LOPO_scaler_2.56s_')]
+    print(scaler_files)
     scalers = [joblib.load(os.path.join(models_folder, model_file)) for model_file in sorted(scaler_files)]
-    # print(model)
+    print(scalers)
 
     # distillation data and soft labels..
     X_distillation = []
@@ -273,9 +274,9 @@ def plot_student_performance(results_df):
 if __name__ == "__main__":
 
     sourceFolder = ROOT_DIR
-    models_folder = sourceFolder + '\\models\\sequence\\LOPO_features\\LOPO_training\\'
+    models_folder = sourceFolder + '\\models\\sequence\\LOPO_training'
 
-    X_distillation, soft_labels_distillation, scalers = call_teacher_training(models_folder)
+    X_distillation, soft_labels_distillation, scalers = call_teacher_training(models_folder + '\\trained_model_files\\')
     student_model = call_student_training(X_distillation, soft_labels_distillation)
 
     features_list = ['TD_KURT', 'FD_MEDIAN', 'TFD_MAX', 'TFD_STD',
@@ -283,29 +284,29 @@ if __name__ == "__main__":
 
     test_results = test_student_model(
         student_model,
-        inlab_folder=sourceFolder + '\\features\\sequence\\inlab\\inlab_3s\\',
-        freeliving_folder=sourceFolder + '\\features\\sequence\\freeliving\\freeliving_3s\\',
+        inlab_folder=sourceFolder + '\\features\\sequence\\inlab\\inlab_2.56s\\',
+        freeliving_folder=sourceFolder + '\\features\\sequence\\freeliving\\freeliving_2.56s\\',
         features_list=features_list,
         scaler=scalers
     )
     # print(test_results)
 
     fig = plot_student_performance(test_results)
-    fig.savefig('student_model_performance.png', bbox_inches='tight', dpi=300)
+    fig.savefig(models_folder + '\\training_results\\student_model_performance.png', bbox_inches='tight', dpi=300)
 
-    joblib.dump(student_model, "student_model.joblib")
+    joblib.dump(student_model, models_folder + "\\trained_model_files\\student_model.joblib")
     print("Student model saved as joblib format.")
 
     input_shape = X_distillation.shape[1]
     print(f"Input shape: {input_shape}")
 
-    student_model = joblib.load("student_model.joblib")
+    student_model = joblib.load(models_folder + "\\trained_model_files\\student_model.joblib")
     input_shape = X_distillation.shape[1]
     initial_type = [('input', FloatTensorType([None, input_shape]))]
 
     onnx_model = convert_sklearn(student_model, initial_types=initial_type)
 
-    with open("student_model.onnx", "wb") as f:
+    with open(models_folder + "\\inference\\student_model.onnx", "wb") as f:
         f.write(onnx_model.SerializeToString())
 
     print("Student model converted to ONNX format.")

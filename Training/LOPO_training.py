@@ -27,8 +27,9 @@ def create_lopo_dataset(participant_id, inlab_files, freeliving_files, inlab_fol
     train_df = pd.DataFrame()
 
     for inlab_file in inlab_files:
-        df = pd.read_csv(os.path.join(inlab_folder, inlab_file))
-        train_df = pd.concat([train_df, df], ignore_index=True)
+        if inlab_file[35:37] != participant_id[35:37]:
+            df = pd.read_csv(os.path.join(inlab_folder, inlab_file))
+            train_df = pd.concat([train_df, df], ignore_index=True)
 
     for freeliving_file in freeliving_files:
         if freeliving_file != participant_id:
@@ -54,10 +55,12 @@ def prepare_features_and_labels(df, features_list, label_column='SEQUENCE_TRUTH_
 
 def train_and_evaluate_lopo():
 
-    models_folder = sourceFolder + '\\models\\sequence\\LOPO_features\\LOPO_training\\'
-    results_folder = sourceFolder + '\\models\\sequence\\LOPO_features\\LOPO_training\\inference\\'
-    inlab_folder = sourceFolder + '\\features\\sequence\\inlab\\inlab_3s\\'
-    freeliving_folder = sourceFolder + '\\features\\sequence\\freeliving\\freeliving_3s\\'
+    models_folder = sourceFolder + '\\models\\sequence\\LOPO_training\\'
+    trained_model_files = models_folder + '\\trained_model_files\\'
+    training_results = models_folder + '\\training_results\\'
+    results_folder = sourceFolder + '\\models\\sequence\\LOPO_training\\inference\\'
+    inlab_folder = sourceFolder + '\\features\\sequence\\inlab\\inlab_2.56s\\'
+    freeliving_folder = sourceFolder + '\\features\\sequence\\freeliving\\freeliving_2.56s\\'
 
     os.makedirs(models_folder, exist_ok=True)
     os.makedirs(results_folder, exist_ok=True)
@@ -116,21 +119,23 @@ def train_and_evaluate_lopo():
             extracted_id = match.group(1)
         else:
             raise ValueError("Could not extract participant ID from filename")
-        # model_filename = os.path.join(models_folder, f'LOPO_model_3s_{extracted_id}.joblib')
-        # scaler_filename = os.path.join(models_folder, f'LOPO_scaler_3s_{extracted_id}.joblib')
-        # joblib.dump(svc, model_filename)
-        # joblib.dump(scaler, scaler_filename)
+        model_filename = os.path.join(trained_model_files, f'LOPO_model_2.56s_{extracted_id}.joblib')
+        scaler_filename = os.path.join(trained_model_files, f'LOPO_scaler_2.56s_{extracted_id}.joblib')
+        joblib.dump(svc, model_filename)
+        joblib.dump(scaler, scaler_filename)
 
         print(f"Results for {participant_id}:")
         print(f"Accuracy: {accuracy:.3f}")
         print(f"F1 Score: {f1:.3f}")
 
     results_df = pd.DataFrame(all_results)
-    # results_df.to_csv(os.path.join(results_folder, 'lopo_results.csv'), index=False)
+    results_df.to_csv(os.path.join(training_results, 'LOPO_training_metrics.csv'), index=False)
 
     print("\nOverall Results:")
     print(f"Average Accuracy: {results_df['accuracy'].mean():.3f} ± {results_df['accuracy'].std():.3f}")
     print(f"Average F1 Score: {results_df['f1_score'].mean():.3f} ± {results_df['f1_score'].std():.3f}")
+    print(f"Average precision: {results_df['precision'].mean():.3f} ± {results_df['precision'].std():.3f}")
+    print(f"Average recall: {results_df['recall'].mean():.3f} ± {results_df['recall'].std():.3f}")
 
     return results_df
 
@@ -141,9 +146,13 @@ def plot_lopo_performance(results_df):
 
     accuracies = results_df['accuracy'].values
     f1_scores = results_df['f1_score'].values
+    recall = results_df['recall'].values
+    precision = results_df['precision'].values
 
     avg_accuracy = np.mean(accuracies)
     avg_f1_score = np.mean(f1_scores)
+    avg_recall_score = np.mean(recall)
+    avg_precision = np.mean(precision)
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
     fig.suptitle('LOPO Model Performance', fontsize=16, fontweight='bold')
