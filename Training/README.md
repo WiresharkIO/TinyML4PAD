@@ -115,6 +115,11 @@ X_test_rfe = rfe.transform(X_test_standardized)
 svc.fit(X_train_rfe, y_train)
 ```
 
+> Performance plot of Teacher-Student knowledge distillation model :
+
+<img width="600" alt="student_model_performance" src="https://github.com/user-attachments/assets/f45acf00-0f73-484c-81c0-b636632edf59">
+
+
 TO DO..
 
 - ~~Recursive Feature Elimination (RFE).~~
