@@ -4,7 +4,8 @@ import os
 from os import walk
 from definitions import ROOT_DIR
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import confusion_matrix, classification_report, ConfusionMatrixDisplay, roc_auc_score
+from sklearn.metrics import recall_score, confusion_matrix, classification_report, ConfusionMatrixDisplay, roc_auc_score
+from imblearn.metrics import specificity_score
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.preprocessing import StandardScaler
 import keras
@@ -36,7 +37,9 @@ def load_data(dataFolder):
                 if participant_id not in participant_data:
                     participant_data[participant_id] = {'sensor_data': [], 'labels': []}
                 participant_data[participant_id]['sensor_data'].extend(df['L_prox_sen_data'].values)
-                participant_data[participant_id]['labels'].extend(df['L_chew_cycle_annotation'].values)
+                # converting multi-class to binary labels
+                binary_labels = np.where(df['L_chew_cycle_annotation'].values > 0, 1, 0)
+                participant_data[participant_id]['labels'].extend(binary_labels)
 
     for file in os.listdir(right_folder):
         if file.endswith('.csv'):
@@ -46,7 +49,9 @@ def load_data(dataFolder):
                 if participant_id not in participant_data:
                     participant_data[participant_id] = {'sensor_data': [], 'labels': []}
                 participant_data[participant_id]['sensor_data'].extend(df['R_prox_sen_data'].values)
-                participant_data[participant_id]['labels'].extend(df['R_chew_cycle_annotation'].values)
+                # converting multi-class to binary labels
+                binary_labels = np.where(df['R_chew_cycle_annotation'].values > 0, 1, 0)
+                participant_data[participant_id]['labels'].extend(binary_labels)
 
     return participant_data
 
@@ -54,10 +59,16 @@ def load_data(dataFolder):
 def create_frame(data, labels, frame_size=128, overlap=64):
     frame = []
     frame_labels = []
+
     for i in range(0, len(data) - frame_size, overlap):
-        frame.append(data[i:i + frame_size])
-        window_label = np.mean(labels[i:i + frame_size]) >= 0.5
-        frame_labels.append(int(window_label))
+        window_data = data[i:i + frame_size]
+        window_labels = labels[i:i + frame_size]
+
+        window_label = np.mean(window_labels) >= 0.3
+
+        if np.std(window_data) > 1e-6:
+            frame.append(window_data)
+            frame_labels.append(int(window_label))
 
     return np.array(frame), np.array(frame_labels)
 
@@ -88,55 +99,70 @@ def create_model(frame_size):
 
 
 def train_model(frame_size, X_train, y_train, X_val, y_val, test_participant, scaler):
-    models_folder = sourceFolder + '\\models\\sequence\\LOPO_training\\'
-    trained_model_files = models_folder + '\\trained_model_files\\'
+    trained_model_files = sourceFolder + '\\models\\sequence\\LOPO_training\\inference\\LOPO_CNN_V2\\'
     model = create_model(frame_size)
 
-    # To deal with imbalance in the dataset..
-    class_weights = compute_class_weight('balanced', classes=np.unique(y_train), y=y_train)
-    class_weight_dict = {0: class_weights[0], 1: class_weights[1]}
+    total_samples = len(y_train)
+    n_samples_0 = np.sum(y_train == 0)
+    n_samples_1 = np.sum(y_train == 1)
+
+    weight_0 = total_samples / (2 * n_samples_0)
+    weight_1 = total_samples / (2 * n_samples_1)
+
+    class_weight_dict = {0: weight_0, 1: weight_1}
 
     model.compile(
         optimizer=keras.optimizers.Adam(1e-4),
-        loss=keras.losses.BinaryCrossentropy(),
-        metrics=['accuracy', keras.metrics.AUC()]
+        # Use focal loss instead of binary crossentropy
+        loss=keras.losses.BinaryFocalCrossentropy(alpha=0.75, gamma=2.0),
+        metrics=['accuracy', keras.metrics.AUC(),
+                 keras.metrics.Precision(),
+                 keras.metrics.Recall()]
     )
 
     callbacks = [
-        keras.callbacks.EarlyStopping(patience=10, restore_best_weights=True),
-        keras.callbacks.ReduceLROnPlateau(factor=0.5, patience=5)
+        keras.callbacks.EarlyStopping(
+            monitor='val_loss',
+            patience=15,
+            restore_best_weights=True,
+            verbose=1
+        ),
+        keras.callbacks.ReduceLROnPlateau(
+            factor=0.5,
+            patience=7,
+            min_lr=1e-6,
+            verbose=1
+        )
     ]
 
     history = model.fit(
         X_train, y_train,
         validation_data=(X_val, y_val),
-        epochs=50,
-        batch_size=64,
+        epochs=100,  
+        batch_size=32, 
         class_weight=class_weight_dict,
-        callbacks=callbacks
+        callbacks=callbacks,
+        verbose=1
     )
-
     model_path = os.path.join(trained_model_files, f"participant_{test_participant}_model.keras")
     model.save(model_path)
     scaler_path = os.path.join(trained_model_files, f"participant_{test_participant}_scaler.joblib")
     joblib.dump(scaler, scaler_path)
-
     return model, history
 
 
 def evaluate_model(model, X_test, y_test, show_plots=True):
-    y_pred = model.predict(X_test) >= 0.5
+    y_pred = model.predict(X_test) > 0.5
     cm = confusion_matrix(y_test, y_pred)
     report = classification_report(y_test, y_pred, output_dict=True)
 
-    if show_plots:
-        cm_disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Non-Chew', 'Chew'])
-        cm_disp.plot()
-        plt.title('Confusion Matrix')
-        plt.show()
+    # balanced accuracy
+    balanced_acc = (recall_score(y_test, y_pred) +
+                    specificity_score(y_test, y_pred)) / 2
 
     metrics = {
         'accuracy': report['accuracy'],
+        'balanced_accuracy': balanced_acc,
         'precision': report['1']['precision'],
         'recall': report['1']['recall'],
         'f1': report['1']['f1-score'],
@@ -177,7 +203,7 @@ def lopo_cross_validation(participant_data, frame_size=128, overlap=64):
 def main():
     models_folder = sourceFolder + '\\models\\sequence\\LOPO_training\\'
     dataFolder = sourceFolder + '\\datasets\\inlab\\'
-    trained_model_files = models_folder + '\\trained_model_files\\'
+    trained_model_files = sourceFolder + '\\models\\sequence\\LOPO_training\\inference\\LOPO_CNN_V2\\'
     training_results = models_folder + '\\training_results\\'
     results_folder = sourceFolder + '\\models\\sequence\\LOPO_training\\inference\\'
 
@@ -188,12 +214,14 @@ def main():
     for participant, metrics in results.items():
         print(f"\nParticipant {participant}:")
         print(f"Accuracy: {metrics['accuracy']:.4f}")
+        print(f"Accuracy: {metrics['balanced_accuracy']:.4f}")
         print(f"Precision: {metrics['precision']:.4f}")
         print(f"Recall: {metrics['recall']:.4f}")
         print(f"F1-score: {metrics['f1']:.4f}")
         print(f"AUC: {metrics['auc']:.4f}")
 
     avg_accuracy = np.mean([m['accuracy'] for m in results.values()])
+    avg_balanced_accuracy = np.mean([m['balanced_accuracy'] for m in results.values()])
     avg_precision = np.mean([m['precision'] for m in results.values()])
     avg_recall = np.mean([m['recall'] for m in results.values()])
     avg_f1 = np.mean([m['f1'] for m in results.values()])
@@ -201,6 +229,7 @@ def main():
 
     print(f"\nAverage Results:")
     print(f"Accuracy: {avg_accuracy:.4f}")
+    print(f"Balanced_accuracy: {avg_balanced_accuracy:.4f}")
     print(f"Precision: {avg_precision:.4f}")
     print(f"Recall: {avg_recall:.4f}")
     print(f"F1-score: {avg_f1:.4f}")
@@ -215,7 +244,7 @@ def main():
             converter = tf.lite.TFLiteConverter.from_keras_model(model)
             tflite_model = converter.convert()
             tflite_filename = f"participant_{participant_id}_model.tflite"
-            tflite_path = os.path.join(results_folder, tflite_filename)
+            tflite_path = os.path.join(trained_model_files, tflite_filename)
 
             with open(tflite_path, 'wb') as f:
                 f.write(tflite_model)
