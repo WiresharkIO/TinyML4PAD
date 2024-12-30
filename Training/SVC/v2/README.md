@@ -2,15 +2,16 @@
 > Class distribution
 -------------------------------------------------------------------------------------
 
-<img width="600" alt="image" src="https://github.com/user-attachments/assets/94c3684d-40a9-4c84-8dac-06b78f4e61ae">
+<img width="600" alt="image" src="https://github.com/user-attachments/assets/3d56eb0a-3abf-4fad-aaf4-fd27a0b54e5e">
+
 
 
 -------------------------------------------------------------------------------------
 > Metrics
 -------------------------------------------------------------------------------------
 
-<img width="600" alt="image" src="https://github.com/user-attachments/assets/04f6929e-87fb-431d-b269-4ea641358312">
-<img width="600" alt="image" src="https://github.com/user-attachments/assets/226eee93-aaaa-4e9a-9172-e66b400b65af">
+<img width="600" alt="image" src="https://github.com/user-attachments/assets/17afe74d-2925-4efc-9c72-2e2d80cf1705">
+
 
 .
 ..
@@ -20,5 +21,7 @@
 > Flow of trained files to deploy
 -------------------------------------------------------------------------------------
 
-<img width="600" alt="image" src="https://github.com/user-attachments/assets/e3a9981b-6d1d-4beb-aa08-8533f080fd3e">
 
+.
+..
+...
