@@ -2,7 +2,7 @@
 > Class distribution
 -------------------------------------------------------------------------------------
 
-<img width="600" alt="image" src="https://github.com/user-attachments/assets/3d56eb0a-3abf-4fad-aaf4-fd27a0b54e5e">
+<img width="600" alt="image" src="https://github.com/user-attachments/assets/b7aa46b9-fe82-4dbf-91ce-ed0547712c6c">
 
 
 
