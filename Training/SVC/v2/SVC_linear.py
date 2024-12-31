@@ -192,7 +192,7 @@ class LOPOFeatureSelectionSVC:
 				 - the dual should be 'false since n_features<n_samples, but 'auto' works..
             """
 
-            svc = LinearSVC(C=10000, dual="auto", loss='squared_hinge', penalty='l2', class_weight={0: 2, 1: 6},
+            svc = LinearSVC(C=0.1, dual="auto", loss='squared_hinge', penalty='l2', class_weight={0: 2, 1: 6},
                             max_iter=1000, verbose=True)
             svc.fit(X_train_reduced, y_train)
 

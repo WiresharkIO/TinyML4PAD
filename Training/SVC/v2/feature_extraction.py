@@ -116,14 +116,13 @@ def standardize_frame(filtered_frame):
 def plot_first_frame(prox_data, participant_id, beta=0.55):
     frame = prox_data[:128]  # Get first frame
 
-    # Apply EMA filter
+    # Exponential moving average..
     filtered_frame = np.zeros_like(frame)
     filtered_frame[0] = frame[0]
 
     for i in range(1, len(frame)):
         filtered_frame[i] = filtered_frame[i - 1] - (beta * (filtered_frame[i - 1] - frame[i]))
 
-    # Plot
     plt.figure(figsize=(12, 6))
     plt.plot(frame, 'b-', label='Raw Signal', alpha=0.7)
     plt.plot(filtered_frame, 'r-', label='EMA Filtered', linewidth=2)
@@ -141,7 +140,7 @@ def analyze_crossing_patterns(standardized_frame):
     for i in range(1, len(standardized_frame)):
         if (standardized_frame[i - 1] * standardized_frame[i]) < 0:
             crossings.append(i)
-            # Calculate absolute amplitude change at crossing
+			
             amplitude = abs(standardized_frame[i] - standardized_frame[i - 1])
             crossing_amplitudes.append(amplitude)
 
@@ -211,7 +210,6 @@ def process_data_with_features(participant_id, prox_data, sequence_annotation, e
     frame_index = int(dataLength // iter_length) - 1
     print('The frame index is ' + str(frame_index))
 	
-    # Initialize feature arrays
     signal_frame = np.zeros((frame_index, frame_length))
 
     ZC_TOTAL = np.zeros(frame_index)
@@ -223,7 +221,6 @@ def process_data_with_features(participant_id, prox_data, sequence_annotation, e
     ZC_IS_CHEW_RANGE = np.zeros(frame_index)
     ZC_IS_NONCHEW_RANGE = np.zeros(frame_index)
 
-    # Amplitude feature arrays
     ZC_MEAN_AMP = np.zeros(frame_index)
     ZC_MAX_AMP = np.zeros(frame_index)
     ZC_MIN_AMP = np.zeros(frame_index)
@@ -233,7 +230,6 @@ def process_data_with_features(participant_id, prox_data, sequence_annotation, e
     ZC_CHEW_STD_AMP = np.zeros(frame_index)
     ZC_NONCHEW_STD_AMP = np.zeros(frame_index)
 
-    # Time-Domain Features
     TD_MAX = np.zeros(frame_index)
     TD_MIN = np.zeros(frame_index)
     TD_MAX_MIN = np.zeros(frame_index)
@@ -245,7 +241,6 @@ def process_data_with_features(participant_id, prox_data, sequence_annotation, e
     TD_KURT = np.zeros(frame_index)
     TD_IQR = np.zeros(frame_index)
 
-    # Ground Truth
     GROUND_TRUTH_FRAME = np.zeros(frame_index)
     EATING_TRUTH_FRAME = np.zeros(frame_index)
     SEQUENCE_TRUTH_FRAME = np.zeros(frame_index)
@@ -263,6 +258,7 @@ def process_data_with_features(participant_id, prox_data, sequence_annotation, e
         # signal_frame[i, :] = filtered_frame
 
         zc_features = analyze_crossing_patterns(standardized_frame)
+		
         # interval features
         ZC_TOTAL[i] = zc_features['total_crossings']
         ZC_MEAN_INTERVAL[i] = zc_features['mean_interval']
