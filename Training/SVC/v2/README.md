@@ -2,7 +2,14 @@
 > Class distribution
 -------------------------------------------------------------------------------------
 
-<img width="600" alt="image" src="https://github.com/user-attachments/assets/b7aa46b9-fe82-4dbf-91ce-ed0547712c6c">
+<img width="600" alt="image" src="https://github.com/user-attachments/assets/612f5e2f-d781-4453-8822-49f37667c97b">
+
+
+
+-------------------------------------------------------------------------------------
+> Pre-Processing (Non-frequency controlled)
+-------------------------------------------------------------------------------------
+<img width="600" alt="image" src="https://github.com/user-attachments/assets/187fa823-4ce8-4f9f-b8cc-36dce75e1ed6" />
 
 
 
@@ -10,7 +17,9 @@
 > Feature importance scores based on pre training and post training feature selection methods
 -------------------------------------------------------------------------------------
 
-<img width="600" alt="image" src="https://github.com/user-attachments/assets/fd9029ed-986c-4b19-be50-8176990999e1">
+<img width="600" alt="image" src="https://github.com/user-attachments/assets/677b65c2-3b33-4f81-ac08-88582452854a">
+
+
 
 -------------------------------------------------------------------------------------
 
@@ -44,7 +53,7 @@
 
 > performance with multiple-metrics specialized for imbalanced datasets
 
-<img width="600" alt="image" src="https://github.com/user-attachments/assets/9b15955e-cf4a-4661-b42a-08453997b565">
+
 
 
 
