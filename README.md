@@ -3,13 +3,14 @@ __Tiny Machine Learning for Proximity Sensor Activity Detection[PAD]__
 ---------------------
 
 > Design Cycle
-<img width="600" alt="image" src="https://github.com/user-attachments/assets/0e791e2f-f819-4daf-8542-740fbb47e352">
+<img width="800" alt="image" src="https://github.com/user-attachments/assets/8f842985-b36c-43a2-a2a5-59ff928a6326">
 
 
 ---------------------
 > Problems existing
 
-<img width="200" alt="image" src="https://github.com/user-attachments/assets/fecb3756-a139-49f5-bcd5-d05fec972a44">
+<img width="100" alt="image" src="https://github.com/user-attachments/assets/fecb3756-a139-49f5-bcd5-d05fec972a44">
+
 
 --> Yet to get a new one..
 
